@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Tableau Cloud JWT Sign-In Helper</title>
+<style>
+body{font-family:Segoe UI,Arial,sans-serif;background:#f4f6f9;margin:0;padding:24px;color:#222}
+.c{max-width:880px;margin:auto;background:#fff;padding:24px;border-radius:8px;box-shadow:0 1px 4px #0002}
+h1{font-size:20px;margin-top:0}h2{font-size:15px;margin:22px 0 0;border-top:1px solid #ddd;padding-top:14px}
+label{display:block;margin-top:12px;font-weight:600;font-size:13px}
+input,textarea{width:100%;box-sizing:border-box;padding:8px;border:1px solid #bbb;border-radius:4px;font-family:monospace;font-size:13px}
+textarea{height:80px}button{margin-top:12px;margin-right:8px;padding:9px 16px;border:0;border-radius:4px;background:#0176d3;color:#fff;cursor:pointer}
+button.s{background:#555}.row{display:flex;gap:12px}.row>div{flex:1}.note{font-size:12px;color:#666;margin-top:6px}
+.err{color:#c00;margin-top:10px;white-space:pre-wrap}
+pre{background:#f0f0f0;padding:10px;overflow:auto;font-size:12px;white-space:pre-wrap;word-break:break-all;margin:4px 0}
+.tabs button{background:#ddd;color:#222;margin-top:12px}.tabs button.a{background:#0176d3;color:#fff}
+</style></head><body><div class="c">
+<h1>Tableau Cloud: Generate JWT &amp; Sign-In Command</h1>
+<div class="note">Tableau Cloud blocks browser (CORS) calls to the REST API, so this page generates the JWT and a command to run outside the browser. Everything is signed locally.</div>
+<h2>Connected App (direct trust)</h2>
+<div class="row"><div><label>Client ID (iss)</label><input id="iss"></div>
+<div><label>Secret ID (kid)</label><input id="kid"></div></div>
+<label>Secret Value</label><input id="secret" type="password">
+<label>Username / email (sub)</label><input id="sub">
+<label>Scopes (comma separated)</label><input id="scp" value="tableau:content:read">
+<div class="row"><div><label>Expiry (minutes, max 10)</label><input id="exp" type="number" value="5" min="1" max="10"></div>
+<div><label>Audience (aud)</label><input id="aud" value="tableau"></div></div>
+<h2>Tableau Cloud</h2>
+<div class="row"><div><label>Pod URL</label><input id="pod" value="https://us-west-2b.online.tableau.com"></div>
+<div><label>API version</label><input id="ver" value="3.26"></div>
+<div><label>Site contentUrl</label><input id="site" placeholder="mysite"></div></div>
+<button onclick="gen()">Generate JWT</button>
+<button class="s" onclick="cp($('jwt').value)">Copy JWT</button>
+<button class="s" onclick="dl('body.json',$('body').textContent)">Download body.json</button>
+<button class="s" onclick="dlPy()">Download Python script</button>
+<div id="err" class="err"></div>
+<label>JWT</label><textarea id="jwt" readonly></textarea>
+<label>Command to sign in (first download body.json into your current folder)</label>
+<div class="tabs"><button id="t0" class="a" onclick="tab(0)">Windows cmd</button><button id="t1" onclick="tab(1)">PowerShell</button><button id="t2" onclick="tab(2)">bash / macOS</button></div>
+<pre id="cmd"></pre><button class="s" onclick="cp($('cmd').textContent)">Copy command</button>
+<label>Sign-in request body</label><pre id="body"></pre>
+<label>Decoded payload</label><pre id="p"></pre>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const b64u=b=>btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+const enc=s=>b64u(new TextEncoder().encode(s));
+const cp=t=>navigator.clipboard.writeText(t);
+const base=()=>$('pod').value.trim().replace(/\/+$/,'');
+const url=()=>`${base()}/api/${$('ver').value.trim()}/auth/signin`;
+let cur=0;
+function tab(i){cur=i;[0,1,2].forEach(k=>$('t'+k).className=k==i?'a':'');cmds()}
+function cmds(){
+ const u=url();
+ $('cmd').textContent=[
+ `curl -X POST "${u}" -H "Content-Type: application/json" -H "Accept: application/json" -d @body.json`,
+ `curl.exe -X POST "${u}" -H "Content-Type: application/json" -H "Accept: application/json" -d "@body.json"`,
+ `curl -X POST '${u}' -H 'Content-Type: application/json' -H 'Accept: application/json' -d @body.json`][cur];
+}
+function dl(name,text){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([text],{type:'text/plain'}));a.download=name;a.click()}
+function dlPy(){
+ const py=`import json, urllib.request
+body = json.load(open("body.json"))
+req = urllib.request.Request("${url()}", data=json.dumps(body).encode(),
+    headers={"Content-Type":"application/json","Accept":"application/json"}, method="POST")
+try:
+    r = json.load(urllib.request.urlopen(req))
+    print("Token:", r["credentials"]["token"])
+    print("Site ID:", r["credentials"]["site"]["id"])
+except urllib.error.HTTPError as e:
+    print(e.code, e.read().decode())
+`;dl('signin.py',py)}
+async function gen(){
+ $('err').textContent='';
+ try{
+  const iss=$('iss').value.trim(),kid=$('kid').value.trim(),sec=$('secret').value,sub=$('sub').value.trim();
+  if(!iss||!kid||!sec||!sub)throw new Error('Client ID, Secret ID, Secret Value and username are required.');
+  const now=Math.floor(Date.now()/1000),m=Math.min(10,Math.max(1,+$('exp').value||5));
+  const header={alg:'HS256',typ:'JWT',kid,iss};
+  const payload={iss,sub,aud:$('aud').value.trim()||'tableau',exp:now+m*60,iat:now,jti:crypto.randomUUID(),scp:$('scp').value.split(',').map(s=>s.trim()).filter(Boolean)};
+  const data=enc(JSON.stringify(header))+'.'+enc(JSON.stringify(payload));
+  const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(sec),{name:'HMAC',hash:'SHA-256'},false,['sign']);
+  const jwt=data+'.'+b64u(await crypto.subtle.sign('HMAC',key,new TextEncoder().encode(data)));
+  $('jwt').value=jwt;
+  $('p').textContent=JSON.stringify(payload,null,2)+'\nExpires: '+new Date(payload.exp*1000).toLocaleString();
+  $('body').textContent=JSON.stringify({credentials:{jwt,site:{contentUrl:$('site').value.trim()}}},null,2);
+  cmds();
+ }catch(e){$('err').textContent=e.message}
+}
+cmds();
+</script></body></html>
